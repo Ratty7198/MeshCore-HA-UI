@@ -1,6 +1,6 @@
 # MeshCore UI for Home Assistant
 
-> **Beta / Work in Progress** — This integration is under active development. Expect rough edges and breaking changes. If you run into issues, please [open an issue on GitHub](https://github.com/Ratty7198/meshcore-ui-ha/issues).
+> **Beta / Work in Progress** — This integration is under active development. Expect rough edges and breaking changes. If you run into issues, please [open an issue on GitHub](https://github.com/Daring-Designs/meshcore-ui-ha/issues).
 
 A companion HACS integration that adds a full-featured dashboard for your [MeshCore](https://meshcore.co.uk) mesh network in Home Assistant. Wraps the [meshcore-ha](https://github.com/meshcore-dev/meshcore-ha) integration to provide messaging, contact management, a map view, live stats, and a command console — all from the HA sidebar.
 
@@ -81,7 +81,7 @@ Two HA sensor entities are created automatically:
 
 1. Open **HACS** in Home Assistant
 2. Click the three-dot menu → **Custom repositories**
-3. Add `https://github.com/Ratty7198/meshcore_ha_ui` with category **Integration**
+3. Add `https://github.com/Daring-Designs/meshcore-ui-ha` with category **Integration**
 4. Find **MeshCore UI** and click **Download**
 5. Restart Home Assistant
 6. Go to **Settings → Devices & Services → Add Integration** and search for **MeshCore UI**
@@ -136,4 +136,4 @@ MIT
 - [meshcore-ha](https://github.com/meshcore-dev/meshcore-ha) — the underlying HA integration this UI wraps
 - [meshcore_py](https://github.com/meshcore-dev/meshcore_py) — the Python SDK
 - [MeshCore](https://meshcore.co.uk) — the firmware and ecosystem
-- [meshtastic-ui-ha](https://github.com/Ratty7198/meshtastic-ui-ha) — the sibling project for Meshtastic
+- [meshtastic-ui-ha](https://github.com/Daring-Designs/meshtastic-ui-ha) — the sibling project for Meshtastic

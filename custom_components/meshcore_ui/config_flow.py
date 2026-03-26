@@ -7,7 +7,6 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
 
 from .const import DOMAIN, MESHCORE_DOMAIN, INTEGRATION_NAME
 
@@ -19,7 +18,7 @@ class MeshCoreUIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         """Handle initial setup step."""
         errors: dict[str, str] = {}
 
@@ -27,9 +26,11 @@ class MeshCoreUIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        # Check meshcore integration is present
+        # Check meshcore integration is present — assign before any reference
         meshcore_entries = self.hass.config_entries.async_entries(MESHCORE_DOMAIN)
-        if not meshcore_entries:
+        meshcore_found = bool(meshcore_entries)
+
+        if not meshcore_found:
             errors["base"] = "meshcore_not_found"
 
         if user_input is not None and not errors:
@@ -43,7 +44,7 @@ class MeshCoreUIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             errors=errors,
             description_placeholders={
-                "meshcore_status": "found" if meshcore_entries else "NOT FOUND — install meshcore-ha first",
+                "meshcore_status": "found" if meshcore_found else "NOT FOUND — install meshcore-ha first",
             },
         )
 
@@ -61,7 +62,7 @@ class MeshCoreUIOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 

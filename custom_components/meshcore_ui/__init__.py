@@ -10,7 +10,6 @@ from typing import Any
 from homeassistant.components import frontend, panel_custom
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, Event, callback
-from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     DOMAIN,
@@ -135,7 +134,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """Register the sidebar panel pointing at our JS bundle."""
     root = Path(__file__).parent
-    frontend.add_extra_js_url(hass, f"/meshcore_ui/panel.js")
 
     # Serve our static files
     hass.http.register_static_path(
@@ -151,6 +149,6 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         require_admin=False,
-        config={},
+        module_url="/meshcore_ui/panel.js",
     )
     _LOGGER.info("MeshCore UI panel registered at /%s", PANEL_URL)
