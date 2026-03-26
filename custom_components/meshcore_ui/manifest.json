@@ -1,0 +1,13 @@
+{
+  "domain": "meshcore_ui",
+  "name": "MeshCore UI",
+  "version": "1.0.0",
+  "documentation": "https://github.com/Ratty7198/meshscore_ha_ui",
+  "issue_tracker": "https://github.com/Ratty7198/meshscore_ha_ui",
+  "dependencies": ["meshcore"],
+  "after_dependencies": ["meshcore"],
+  "requirements": [],
+  "codeowners": ["@Ratty7198"],
+  "iot_class": "local_push",
+  "config_flow": true
+}

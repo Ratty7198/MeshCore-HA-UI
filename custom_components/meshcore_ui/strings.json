@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MeshCore UI",
+        "description": "Add the MeshCore UI dashboard panel to Home Assistant.\n\nMeshCore integration status: {meshcore_status}",
+        "data": {}
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one MeshCore UI instance is allowed."
+    },
+    "error": {
+      "meshcore_not_found": "The meshcore integration was not found. Please install and configure meshcore-ha first."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "MeshCore UI Options",
+        "data": {
+          "message_limit": "Message history limit per conversation"
+        }
+      }
+    }
+  }
+}
