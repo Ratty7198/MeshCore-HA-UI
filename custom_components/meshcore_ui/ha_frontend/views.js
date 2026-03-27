@@ -473,6 +473,7 @@ export class MeshCoreStatsView extends HTMLElement {
     this._hass = null;
     this._state = null;
     this._nodeInfo = null;
+    this._loading = true;
   }
 
   set hass(val) {
@@ -481,6 +482,8 @@ export class MeshCoreStatsView extends HTMLElement {
   }
 
   async _load() {
+    this._loading = true;
+    this._renderShell();
     try {
       const [stateRes, nodeRes] = await Promise.all([
         this._hass.connection.sendMessagePromise({ type: 'meshcore_ui/get_state' }),
@@ -491,7 +494,8 @@ export class MeshCoreStatsView extends HTMLElement {
     } catch (e) {
       showToast(`Failed to load stats: ${e.message}`, 'error');
     }
-    this._render();
+    this._loading = false;
+    this._renderContent();
   }
 
   async _sendAdvert() {
@@ -501,76 +505,128 @@ export class MeshCoreStatsView extends HTMLElement {
     } catch (e) { showToast(`Failed: ${e.message}`, 'error'); }
   }
 
-  _render() {
-    const ni = this._state?.node_info || {};
-    const sensors = this._nodeInfo?.sensors || {};
-
-    const sensorVal = (suffix) => {
-      const key = Object.keys(sensors).find(k => k.endsWith(suffix));
-      return key ? sensors[key].state : undefined;
-    };
-
+  _renderShell() {
+    if (this.shadowRoot.querySelector('.stats-wrap')) return;
     this.shadowRoot.innerHTML = `
       <style>
         ${sharedStyles}
-        :host { display: block; height: 100%; overflow-y: auto; padding: 20px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px; }
+        :host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+        .stats-header {
+          padding: 12px 20px; border-bottom: 1px solid var(--mc-border);
+          background: var(--mc-surface); display: flex; align-items: center; gap: 10px;
+        }
+        .stats-header h2 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex: 1; }
+        .stats-wrap { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(185px, 1fr)); gap: 12px; }
         .stat-card { display: flex; align-items: center; gap: 14px; }
-        .stat-icon { font-size: 28px; }
-        .stat-value { font-size: 24px; font-weight: 700; }
-        .stat-label { font-size: 12px; color: var(--mc-text2); }
-        .section-title { font-size: 13px; font-weight: 600; color: var(--mc-text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .info-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--mc-border); }
+        .stat-icon { font-size: 26px; flex-shrink: 0; }
+        .stat-value { font-size: 22px; font-weight: 700; line-height: 1.1; }
+        .stat-label { font-size: 11px; color: var(--mc-text2); margin-top: 2px; }
+        .section-title { font-size: 11px; font-weight: 600; color: var(--mc-text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+        .info-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--mc-border); font-size: 13px; }
         .info-row:last-child { border-bottom: none; }
-        .info-label { font-size: 13px; color: var(--mc-text2); }
-        .info-value { font-size: 13px; font-weight: 500; }
-        .actions-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
-        .sensors-list { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
-        .sensor-row { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: var(--mc-radius-sm); font-size: 12px; }
-        .sensor-row:nth-child(odd) { background: var(--mc-surface); }
-        .sensor-entity { color: var(--mc-text2); font-family: monospace; }
-        .sensor-state { font-weight: 500; }
+        .info-label { color: var(--mc-text2); }
+        .info-value { font-weight: 500; text-align: right; max-width: 60%; word-break: break-all; }
+        .sensors-list { display: flex; flex-direction: column; }
+        .sensor-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: var(--mc-radius-sm); font-size: 12px; gap: 10px; }
+        .sensor-row:nth-child(odd) { background: var(--mc-surface2); }
+        .sensor-name { color: var(--mc-text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+        .sensor-val { font-weight: 500; white-space: nowrap; }
+        .sensor-unit { color: var(--mc-text2); margin-left: 2px; font-size: 11px; }
+        .actions-row { display: flex; gap: 10px; flex-wrap: wrap; }
       </style>
-      ${!this._state ? '<div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>' : `
-        <div class="stats-grid">
-          ${statCard('💬', 'Messages Today', this._state.messages_today ?? '—')}
-          ${statCard('📡', 'Node Name', ni.name || '—')}
-          ${statCard('🔋', 'Battery', ni.battery_pct ? `${ni.battery_pct}%` : '—')}
-          ${statCard('📶', 'TX Power', ni.tx_power ? `${ni.tx_power} dBm` : '—')}
-          ${statCard('🌐', 'Region', ni.region || sensorVal('_region') || '—')}
-          ${statCard('⏱️', 'Uptime', formatUptime(ni.uptime || sensorVal('_uptime')))}
-        </div>
+      <div class="stats-header">
+        <h2>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Stats
+        </h2>
+        <button class="mc-btn mc-btn-secondary" id="advert-btn">📢 Advertise</button>
+        <button class="mc-btn mc-btn-secondary" id="refresh-btn">↻ Refresh</button>
+      </div>
+      <div class="stats-wrap"><div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div></div>`;
 
-        <div class="mc-card" style="margin-bottom:16px">
-          <div class="section-title">Connection</div>
-          <div>
-            ${infoRow('Status', this._state.connected ? '🟢 Connected' : '🔴 Disconnected')}
-            ${infoRow('Pubkey Prefix', ni.pubkey || sensorVal('_pubkey_prefix'))}
-            ${infoRow('Frequency', ni.freq || sensorVal('_frequency'))}
+    this.shadowRoot.querySelector('#advert-btn').addEventListener('click', () => this._sendAdvert());
+    this.shadowRoot.querySelector('#refresh-btn').addEventListener('click', () => this._load());
+  }
+
+  _renderContent() {
+    const wrap = this.shadowRoot.querySelector('.stats-wrap');
+    if (!wrap) return;
+
+    if (this._loading || !this._state) {
+      wrap.innerHTML = '<div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>';
+      return;
+    }
+
+    const ni = this._state.node_info || {};
+    const sensors = this._nodeInfo?.sensors || {};
+    const binary = this._nodeInfo?.binary_sensors || {};
+    const sensorCount = this._state.sensor_count || Object.keys(sensors).length;
+
+    // Pretty-print friendly sensor name from entity ID
+    const prettyName = (eid) => {
+      return eid
+        .replace(/^(sensor|binary_sensor)\./, '')
+        .replace(/^meshcore_/, '')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+    };
+
+    wrap.innerHTML = `
+      <!-- Summary cards -->
+      <div class="stats-grid">
+        ${statCard('💬', 'Messages Today', this._state.messages_today ?? 0)}
+        ${statCard('📡', 'Node Name', ni.name || '—')}
+        ${statCard('🔋', 'Battery', ni.battery_pct ? \`\${ni.battery_pct}%\` : '—')}
+        ${statCard('📶', 'TX Power', ni.tx_power ? \`\${ni.tx_power} dBm\` : '—')}
+        ${statCard('🌐', 'Region', ni.region || '—')}
+        ${statCard('⏱️', 'Uptime', formatUptime(ni.uptime))}
+      </div>
+
+      <!-- Connection card -->
+      <div class="mc-card">
+        <div class="section-title">Connection</div>
+        ${infoRow('Status', this._state.connected ? '🟢 Connected' : '🔴 Disconnected')}
+        ${ni.pubkey ? infoRow('Public Key Prefix', ni.pubkey) : ''}
+        ${ni.freq   ? infoRow('Frequency', ni.freq) : ''}
+        ${ni.rssi   ? infoRow('RSSI', \`\${ni.rssi} dBm\`) : ''}
+        ${ni.snr    ? infoRow('SNR', \`\${ni.snr} dB\`) : ''}
+        ${infoRow('MeshCore Sensors Found', sensorCount)}
+      </div>
+
+      <!-- All sensors -->
+      ${sensorCount > 0 ? \`
+        <div class="mc-card">
+          <div class="section-title" style="margin-bottom:8px">All MeshCore Entities (\${sensorCount})</div>
+          <div class="sensors-list">
+            \${Object.entries(sensors).sort(([a],[b])=>a.localeCompare(b)).map(([eid, s]) => \`
+              <div class="sensor-row">
+                <span class="sensor-name" title="\${escHtml(eid)}">\${escHtml(prettyName(eid))}</span>
+                <span class="sensor-val">
+                  \${escHtml(s.state)}
+                  \${s.attributes?.unit_of_measurement ? \`<span class="sensor-unit">\${escHtml(s.attributes.unit_of_measurement)}</span>\` : ''}
+                </span>
+              </div>\`).join('')}
+            \${Object.entries(binary).sort(([a],[b])=>a.localeCompare(b)).map(([eid, s]) => \`
+              <div class="sensor-row">
+                <span class="sensor-name" title="\${escHtml(eid)}">\${escHtml(prettyName(eid))}</span>
+                <span class="sensor-val \${s.state === 'on' ? '' : ''}">\${s.state === 'on' ? '✅ on' : '⭕ off'}</span>
+              </div>\`).join('')}
           </div>
-        </div>
+        </div>\` : \`
+        <div class="mc-card">
+          <div class="section-title">No MeshCore Sensor Entities Found</div>
+          <p style="font-size:13px;color:var(--mc-text2);margin-top:8px">
+            Make sure the <strong>meshcore</strong> integration is installed and your radio is connected.
+            Sensor entities should appear under Developer Tools → States with names starting with <code>sensor.meshcore_</code>.
+          </p>
+        </div>\`}
+    `;
+  }
 
-        ${Object.keys(sensors).length ? `
-          <div class="mc-card" style="margin-bottom:16px">
-            <div class="section-title" style="margin-bottom:8px">All Sensors (${Object.keys(sensors).length})</div>
-            <div class="sensors-list">
-              ${Object.entries(sensors).map(([id, s]) => `
-                <div class="sensor-row">
-                  <span class="sensor-entity">${escHtml(id.replace('sensor.', ''))}</span>
-                  <span class="sensor-state">${escHtml(s.state)}</span>
-                </div>`).join('')}
-            </div>
-          </div>` : ''}
-
-        <div class="actions-row">
-          <button class="mc-btn mc-btn-secondary" id="advert-btn">📢 Send Advertisement</button>
-          <button class="mc-btn mc-btn-secondary" id="refresh-btn">↻ Refresh</button>
-        </div>
-      `}`;
-
-    this.shadowRoot.querySelector('#advert-btn')?.addEventListener('click', () => this._sendAdvert());
-    this.shadowRoot.querySelector('#refresh-btn')?.addEventListener('click', () => this._load());
+  _render() {
+    this._renderShell();
+    this._renderContent();
   }
 }
 
@@ -711,21 +767,27 @@ export class MeshCoreMapView extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._hass = null;
-    this._contacts = [];
-    this._map = null;
-    this._markers = [];
+    this._allContacts = [];
+    this._gpsContacts = [];
+    this._loading = true;
   }
 
   set hass(val) {
     this._hass = val;
-    if (!this._contacts.length) this._loadAndDraw();
+    this._loadAndDraw();
   }
 
   async _loadAndDraw() {
+    this._loading = true;
+    this._renderShell();
     try {
       const res = await this._hass.connection.sendMessagePromise({ type: 'meshcore_ui/get_contacts' });
-      this._contacts = (res.contacts || []).filter(c => c.lat && c.lon);
-    } catch (e) { /* silent */ }
+      this._allContacts = res.contacts || [];
+      this._gpsContacts = this._allContacts.filter(c => c.lat != null && c.lon != null);
+    } catch (e) {
+      showToast(`Map load failed: ${e.message}`, 'error');
+    }
+    this._loading = false;
     this._drawMap();
   }
 
@@ -733,60 +795,173 @@ export class MeshCoreMapView extends HTMLElement {
     const container = this.shadowRoot.querySelector('#map-container');
     if (!container) return;
 
-    if (!this._contacts.length) {
-      container.innerHTML = `<div class="mc-empty" style="height:100%"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg><h3>No position data</h3><p>Contacts with GPS coordinates will appear here</p></div>`;
+    if (this._loading) {
+      container.innerHTML = '<div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>';
       return;
     }
 
-    // Render a simple SVG-based map placeholder with contact list
-    const lats = this._contacts.map(c => parseFloat(c.lat));
-    const lons = this._contacts.map(c => parseFloat(c.lon));
-    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+    // Update badge
+    const badge = this.shadowRoot.querySelector('.map-badge');
+    if (badge) badge.textContent = `${this._allContacts.length} contacts · ${this._gpsContacts.length} with GPS`;
 
-    container.innerHTML = `
-      <div style="padding:16px;height:100%;overflow-y:auto">
-        <div class="mc-card" style="margin-bottom:14px">
-          <p style="font-size:13px;color:var(--mc-text2)">
-            💡 For a full interactive map, the <strong>meshcore-ha</strong> integration exposes GPS entities you can use with the HA map card. ${this._contacts.length} contact(s) have position data.
-          </p>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
-          ${this._contacts.map(c => `
-            <div class="mc-card" style="display:flex;flex-direction:column;gap:6px">
-              <div style="font-weight:600;font-size:14px">📍 ${escHtml(c.name || c.pubkey_prefix)}</div>
-              <div style="font-size:12px;color:var(--mc-text2)">Lat: ${c.lat} / Lon: ${c.lon}</div>
-              ${c.snr !== undefined ? `<div style="font-size:12px">SNR: <span style="color:${snrColor(c.snr)}">${c.snr} dB</span></div>` : ''}
-              ${c.last_seen ? `<div style="font-size:12px;color:var(--mc-text2)">Last seen: ${formatTime(c.last_seen)}</div>` : ''}
-            </div>`).join('')}
-        </div>
-      </div>`;
+    if (this._gpsContacts.length > 0) {
+      // Render Leaflet map inside an iframe-like div using srcdoc trick
+      this._renderLeaflet(container);
+    } else {
+      // Show all contacts in cards + helpful message
+      container.innerHTML = `
+        <div style="height:100%;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div class="mc-card">
+            <div style="font-size:14px;font-weight:600;margin-bottom:6px">📍 No GPS position data found</div>
+            <p style="font-size:13px;color:var(--mc-text2);line-height:1.6">
+              ${this._allContacts.length > 0
+                ? `Found <strong>${this._allContacts.length}</strong> contact(s) but none have GPS coordinates. Position data depends on nodes broadcasting their location via MeshCore.`
+                : 'No contacts found yet. Contacts appear once your node hears from others on the mesh.'}
+            </p>
+          </div>
+          ${this._allContacts.length > 0 ? `
+            <div class="section-title">${this._allContacts.length} Contact(s) — No GPS</div>
+            <div class="contacts-grid">
+              ${this._allContacts.map(c => `
+                <div class="mc-card contact-card">
+                  <div class="contact-name">👤 ${escHtml(c.name || c.pubkey_prefix)}</div>
+                  <div class="contact-detail" style="font-family:monospace">${escHtml(c.pubkey_prefix || '')}</div>
+                  ${c.last_seen ? `<div class="contact-detail">Last seen: ${formatTime(c.last_seen)}</div>` : ''}
+                  ${c.snr != null ? `<div class="contact-detail">SNR: <span style="color:${snrColor(c.snr)}">${c.snr} dB</span></div>` : ''}
+                  ${c.path ? `<div class="contact-detail">Path: ${escHtml(c.path)}</div>` : ''}
+                </div>`).join('')}
+            </div>` : ''}
+        </div>`;
+    }
+  }
+
+  _renderLeaflet(container) {
+    const pts = this._gpsContacts;
+    const markersJson = JSON.stringify(pts.map(c => ({
+      lat: c.lat, lon: c.lon,
+      name: c.name || c.pubkey_prefix,
+      snr: c.snr, last_seen: c.last_seen,
+      path: c.path, pubkey: c.pubkey_prefix,
+    })));
+
+    // Build a self-contained HTML page for the map iframe
+    const mapHtml = `<!DOCTYPE html><html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html, body, #map { width:100%; height:100%; }
+    .mc-popup { font-family: sans-serif; font-size: 13px; min-width: 160px; }
+    .mc-popup strong { display:block; margin-bottom:4px; font-size:14px; }
+    .mc-popup .detail { color: #6b7280; margin-top:2px; }
+    .snr-good { color: #22c55e; } .snr-mid { color: #eab308; } .snr-low { color: #f97316; } .snr-bad { color: #ef4444; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  const markers = ${markersJson};
+  const map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map);
+
+  const snrColor = snr => {
+    const n = parseFloat(snr);
+    if (isNaN(n)) return '#6b7280';
+    if (n >= 5) return '#22c55e';
+    if (n >= 0) return '#eab308';
+    if (n >= -10) return '#f97316';
+    return '#ef4444';
+  };
+
+  const formatTime = ts => {
+    if (!ts) return null;
+    const d = new Date(ts);
+    if (isNaN(d)) return null;
+    const diff = (Date.now() - d) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    if (diff < 86400) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    return d.toLocaleDateString([],{month:'short',day:'numeric'});
+  };
+
+  const latlngs = [];
+  markers.forEach(m => {
+    const color = snrColor(m.snr);
+    const icon = L.divIcon({
+      html: '<div style="width:14px;height:14px;border-radius:50%;background:' + color + ';border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>',
+      className: '', iconSize: [14,14], iconAnchor: [7,7]
+    });
+    const ts = formatTime(m.last_seen);
+    const popup = '<div class="mc-popup">'
+      + '<strong>' + (m.name || m.pubkey) + '</strong>'
+      + '<div class="detail" style="font-family:monospace;font-size:11px">' + (m.pubkey||'') + '</div>'
+      + (m.snr != null ? '<div class="detail">SNR: <span style="color:'+color+'">' + m.snr + ' dB</span></div>' : '')
+      + (ts ? '<div class="detail">Last seen: ' + ts + '</div>' : '')
+      + (m.path ? '<div class="detail">Path: ' + m.path + '</div>' : '')
+      + '</div>';
+    L.marker([m.lat, m.lon], {icon}).addTo(map).bindPopup(popup);
+    latlngs.push([m.lat, m.lon]);
+  });
+
+  if (latlngs.length === 1) {
+    map.setView(latlngs[0], 13);
+  } else if (latlngs.length > 1) {
+    map.fitBounds(latlngs, {padding:[30,30]});
+  }
+</script>
+</body></html>`;
+
+    container.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'width:100%;height:100%;border:none;';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    container.appendChild(iframe);
+    iframe.contentDocument.open();
+    iframe.contentDocument.write(mapHtml);
+    iframe.contentDocument.close();
   }
 
   connectedCallback() { this._render(); }
 
-  _render() {
+  _renderShell() {
+    if (this.shadowRoot.querySelector('.map-header')) return;
     this.shadowRoot.innerHTML = `
       <style>
         ${sharedStyles}
         :host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
         .map-header {
           padding: 12px 20px; border-bottom: 1px solid var(--mc-border);
-          background: var(--mc-surface); display: flex; align-items: center; gap: 10px;
+          background: var(--mc-surface); display: flex; align-items: center; gap: 10px; flex-shrink: 0;
         }
         .map-header h2 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex: 1; }
-        #map-container { flex: 1; overflow: hidden; }
+        .map-badge { font-size: 12px; color: var(--mc-text2); }
+        #map-container { flex: 1; overflow: hidden; position: relative; }
+        .contacts-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 10px; }
+        .contact-card { display: flex; flex-direction: column; gap: 4px; }
+        .contact-name { font-weight: 600; font-size: 14px; }
+        .contact-detail { font-size: 12px; color: var(--mc-text2); }
+        .section-title { font-size: 11px; font-weight: 600; color: var(--mc-text2); text-transform: uppercase; letter-spacing: 0.06em; }
       </style>
       <div class="map-header">
         <h2>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
           Map
         </h2>
+        <span class="map-badge">Loading…</span>
         <button class="mc-btn mc-btn-secondary" id="map-refresh">↻ Refresh</button>
       </div>
       <div id="map-container"><div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div></div>`;
 
-    this.shadowRoot.querySelector('#map-refresh')?.addEventListener('click', () => this._loadAndDraw());
+    this.shadowRoot.querySelector('#map-refresh').addEventListener('click', () => this._loadAndDraw());
+  }
+
+  _render() {
+    this._renderShell();
     if (this._hass) this._loadAndDraw();
   }
 }
