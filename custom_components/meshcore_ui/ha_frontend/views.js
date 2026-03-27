@@ -793,137 +793,186 @@ export class MeshCoreMapView extends HTMLElement {
 
   _drawMap() {
     const container = this.shadowRoot.querySelector('#map-container');
-    if (!container) return;
+    if (!container || this._loading) return;
 
-    if (this._loading) {
-      container.innerHTML = '<div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>';
-      return;
-    }
-
-    // Update badge
+    // Update status badge
     const badge = this.shadowRoot.querySelector('.map-badge');
-    if (badge) badge.textContent = `${this._allContacts.length} contacts · ${this._gpsContacts.length} with GPS`;
-
-    if (this._gpsContacts.length > 0) {
-      // Render Leaflet map inside an iframe-like div using srcdoc trick
-      this._renderLeaflet(container);
-    } else {
-      // Show all contacts in cards + helpful message
-      container.innerHTML = `
-        <div style="height:100%;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px">
-          <div class="mc-card">
-            <div style="font-size:14px;font-weight:600;margin-bottom:6px">📍 No GPS position data found</div>
-            <p style="font-size:13px;color:var(--mc-text2);line-height:1.6">
-              ${this._allContacts.length > 0
-                ? `Found <strong>${this._allContacts.length}</strong> contact(s) but none have GPS coordinates. Position data depends on nodes broadcasting their location via MeshCore.`
-                : 'No contacts found yet. Contacts appear once your node hears from others on the mesh.'}
-            </p>
-          </div>
-          ${this._allContacts.length > 0 ? `
-            <div class="section-title">${this._allContacts.length} Contact(s) — No GPS</div>
-            <div class="contacts-grid">
-              ${this._allContacts.map(c => `
-                <div class="mc-card contact-card">
-                  <div class="contact-name">👤 ${escHtml(c.name || c.pubkey_prefix)}</div>
-                  <div class="contact-detail" style="font-family:monospace">${escHtml(c.pubkey_prefix || '')}</div>
-                  ${c.last_seen ? `<div class="contact-detail">Last seen: ${formatTime(c.last_seen)}</div>` : ''}
-                  ${c.snr != null ? `<div class="contact-detail">SNR: <span style="color:${snrColor(c.snr)}">${c.snr} dB</span></div>` : ''}
-                  ${c.path ? `<div class="contact-detail">Path: ${escHtml(c.path)}</div>` : ''}
-                </div>`).join('')}
-            </div>` : ''}
-        </div>`;
+    if (badge) {
+      badge.textContent = this._gpsContacts.length > 0
+        ? `${this._gpsContacts.length} / ${this._allContacts.length} contacts on map`
+        : `${this._allContacts.length} contact(s) · no GPS data`;
     }
-  }
 
-  _renderLeaflet(container) {
-    const pts = this._gpsContacts;
-    const markersJson = JSON.stringify(pts.map(c => ({
+    // Always show the Leaflet map — use HA home location as default centre
+    const homeLat = this._hass?.config?.latitude ?? 51.5;
+    const homeLon = this._hass?.config?.longitude ?? -0.09;
+    const defaultZoom = this._gpsContacts.length > 0 ? null : 10; // null = auto-fit to markers
+
+    const markersJson = JSON.stringify(this._gpsContacts.map(c => ({
       lat: c.lat, lon: c.lon,
       name: c.name || c.pubkey_prefix,
-      snr: c.snr, last_seen: c.last_seen,
-      path: c.path, pubkey: c.pubkey_prefix,
+      snr: c.snr ?? null,
+      last_seen: c.last_seen ?? null,
+      path: c.path ?? null,
+      pubkey: c.pubkey_prefix,
     })));
 
-    // Build a self-contained HTML page for the map iframe
+    // Sidebar contact list (all contacts, GPS highlighted)
+    const sidebarHtml = this._allContacts.length === 0
+      ? '<div style="padding:20px 16px;color:#9ca3af;font-size:13px;text-align:center">No contacts yet.<br>Contacts appear once your node hears others.</div>'
+      : this._allContacts.map(c => `
+          <div class="cl-item ${c.lat != null ? 'cl-has-gps' : ''}" data-lat="${c.lat ?? ''}" data-lon="${c.lon ?? ''}">
+            <div class="cl-dot" style="background:${c.lat != null ? '#22c55e' : '#4b5563'}"></div>
+            <div class="cl-body">
+              <div class="cl-name">${escHtml(c.name || c.pubkey_prefix)}</div>
+              <div class="cl-meta">
+                ${c.snr != null ? `<span style="color:${snrColor(c.snr)}">${c.snr} dB</span> · ` : ''}
+                ${c.lat != null ? '📍 GPS' : 'No GPS'}
+                ${c.last_seen ? ' · ' + formatTime(c.last_seen) : ''}
+              </div>
+            </div>
+          </div>`).join('');
+
     const mapHtml = `<!DOCTYPE html><html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"><\/script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    html, body, #map { width:100%; height:100%; }
-    .mc-popup { font-family: sans-serif; font-size: 13px; min-width: 160px; }
-    .mc-popup strong { display:block; margin-bottom:4px; font-size:14px; }
-    .mc-popup .detail { color: #6b7280; margin-top:2px; }
-    .snr-good { color: #22c55e; } .snr-mid { color: #eab308; } .snr-low { color: #f97316; } .snr-bad { color: #ef4444; }
+    html, body { width:100%; height:100%; font-family:sans-serif; }
+    #map { width:100%; height:100%; }
+    .mc-popup { font-size:13px; min-width:160px; line-height:1.5; }
+    .mc-popup strong { display:block; margin-bottom:3px; font-size:14px; }
+    .mc-popup .row { color:#6b7280; font-size:12px; margin-top:1px; }
+    .home-marker { font-size:20px; line-height:1; }
   </style>
 </head>
 <body>
 <div id="map"></div>
 <script>
+  const HOME_LAT = ${homeLat};
+  const HOME_LON = ${homeLon};
+  const DEFAULT_ZOOM = ${defaultZoom !== null ? defaultZoom : 'null'};
   const markers = ${markersJson};
-  const map = L.map('map');
+
+  const map = L.map('map', { zoomControl: true });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors', maxZoom: 19
+    attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
+    maxZoom: 19
   }).addTo(map);
+
+  // Home marker
+  const homeIcon = L.divIcon({
+    html: '<div class="home-marker">🏠</div>',
+    className: '', iconSize: [24,24], iconAnchor: [12,20]
+  });
+  L.marker([HOME_LAT, HOME_LON], {icon: homeIcon})
+    .addTo(map)
+    .bindPopup('<strong>Home</strong><div class="row">HA home location</div>');
 
   const snrColor = snr => {
     const n = parseFloat(snr);
     if (isNaN(n)) return '#6b7280';
-    if (n >= 5) return '#22c55e';
-    if (n >= 0) return '#eab308';
+    if (n >= 5)   return '#22c55e';
+    if (n >= 0)   return '#eab308';
     if (n >= -10) return '#f97316';
     return '#ef4444';
   };
 
-  const formatTime = ts => {
+  const fmtTime = ts => {
     if (!ts) return null;
-    const d = new Date(ts);
-    if (isNaN(d)) return null;
+    const d = new Date(ts); if (isNaN(d)) return null;
     const diff = (Date.now() - d) / 1000;
-    if (diff < 60) return 'just now';
-    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    if (diff < 60)    return 'just now';
+    if (diff < 3600)  return Math.floor(diff/60) + 'm ago';
     if (diff < 86400) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
     return d.toLocaleDateString([],{month:'short',day:'numeric'});
   };
 
-  const latlngs = [];
+  const latlngs = [[HOME_LAT, HOME_LON]];
+
   markers.forEach(m => {
     const color = snrColor(m.snr);
     const icon = L.divIcon({
-      html: '<div style="width:14px;height:14px;border-radius:50%;background:' + color + ';border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>',
-      className: '', iconSize: [14,14], iconAnchor: [7,7]
+      html: '<div style="width:16px;height:16px;border-radius:50%;background:'+color+';border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.5)"></div>',
+      className: '', iconSize: [16,16], iconAnchor: [8,8]
     });
-    const ts = formatTime(m.last_seen);
+    const ts = fmtTime(m.last_seen);
     const popup = '<div class="mc-popup">'
       + '<strong>' + (m.name || m.pubkey) + '</strong>'
-      + '<div class="detail" style="font-family:monospace;font-size:11px">' + (m.pubkey||'') + '</div>'
-      + (m.snr != null ? '<div class="detail">SNR: <span style="color:'+color+'">' + m.snr + ' dB</span></div>' : '')
-      + (ts ? '<div class="detail">Last seen: ' + ts + '</div>' : '')
-      + (m.path ? '<div class="detail">Path: ' + m.path + '</div>' : '')
+      + '<div class="row" style="font-family:monospace;font-size:11px">' + (m.pubkey||'') + '</div>'
+      + (m.snr != null ? '<div class="row">SNR: <span style="color:'+color+'">'+m.snr+' dB</span></div>' : '')
+      + (ts   ? '<div class="row">Last seen: '+ts+'</div>' : '')
+      + (m.path ? '<div class="row">Path: '+m.path+'</div>' : '')
+      + '<div class="row">'+m.lat.toFixed(5)+', '+m.lon.toFixed(5)+'</div>'
       + '</div>';
     L.marker([m.lat, m.lon], {icon}).addTo(map).bindPopup(popup);
     latlngs.push([m.lat, m.lon]);
   });
 
-  if (latlngs.length === 1) {
-    map.setView(latlngs[0], 13);
-  } else if (latlngs.length > 1) {
-    map.fitBounds(latlngs, {padding:[30,30]});
+  // Fit view
+  if (markers.length > 0) {
+    map.fitBounds(latlngs, {padding:[40,40], maxZoom:14});
+  } else {
+    map.setView([HOME_LAT, HOME_LON], DEFAULT_ZOOM || 10);
   }
-</script>
+
+  // Listen for fly-to messages from parent
+  window.addEventListener('message', e => {
+    if (e.data && e.data.type === 'fly_to') {
+      map.flyTo([e.data.lat, e.data.lon], 15, {duration: 1.2});
+    }
+  });
+<\/script>
 </body></html>`;
 
     container.innerHTML = '';
+
+    // Split layout: sidebar + map
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'display:flex;width:100%;height:100%;overflow:hidden;';
+
+    // Sidebar
+    const sidebar = document.createElement('div');
+    sidebar.style.cssText = 'width:220px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--mc-border);background:var(--mc-surface);';
+    sidebar.innerHTML = `
+      <style>
+        .cl-item { display:flex;align-items:flex-start;gap:8px;padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--mc-border);transition:background .12s; }
+        .cl-item:hover { background:var(--mc-surface2); }
+        .cl-item.cl-has-gps:hover { background:rgba(34,197,94,.08); }
+        .cl-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:5px; }
+        .cl-name { font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+        .cl-meta { font-size:11px;color:var(--mc-text2);margin-top:2px; }
+        .cl-header { padding:10px 12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mc-text2);border-bottom:1px solid var(--mc-border); }
+      </style>
+      <div class="cl-header">Contacts</div>
+      ${sidebarHtml}`;
+
+    // Map iframe
     const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'width:100%;height:100%;border:none;';
+    iframe.style.cssText = 'flex:1;border:none;min-width:0;';
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-    container.appendChild(iframe);
+
+    wrapper.appendChild(sidebar);
+    wrapper.appendChild(iframe);
+    container.appendChild(wrapper);
+
     iframe.contentDocument.open();
     iframe.contentDocument.write(mapHtml);
     iframe.contentDocument.close();
+
+    // Click contact in sidebar → fly map to marker
+    sidebar.querySelectorAll('.cl-item.cl-has-gps').forEach(item => {
+      item.addEventListener('click', () => {
+        const lat = parseFloat(item.dataset.lat);
+        const lon = parseFloat(item.dataset.lon);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          iframe.contentWindow?.postMessage({ type: 'fly_to', lat, lon }, '*');
+        }
+      });
+    });
   }
 
   connectedCallback() { this._render(); }
@@ -933,30 +982,29 @@ export class MeshCoreMapView extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         ${sharedStyles}
-        :host { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+        :host { display:flex;flex-direction:column;height:100%;overflow:hidden; }
         .map-header {
-          padding: 12px 20px; border-bottom: 1px solid var(--mc-border);
-          background: var(--mc-surface); display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+          padding:12px 20px;border-bottom:1px solid var(--mc-border);
+          background:var(--mc-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;
         }
-        .map-header h2 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex: 1; }
-        .map-badge { font-size: 12px; color: var(--mc-text2); }
-        #map-container { flex: 1; overflow: hidden; position: relative; }
-        .contacts-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 10px; }
-        .contact-card { display: flex; flex-direction: column; gap: 4px; }
-        .contact-name { font-weight: 600; font-size: 14px; }
-        .contact-detail { font-size: 12px; color: var(--mc-text2); }
-        .section-title { font-size: 11px; font-weight: 600; color: var(--mc-text2); text-transform: uppercase; letter-spacing: 0.06em; }
+        .map-header h2 { font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;flex:1; }
+        .map-badge { font-size:12px;color:var(--mc-text2); }
+        #map-container { flex:1;overflow:hidden;position:relative;min-height:0; }
       </style>
       <div class="map-header">
         <h2>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/>
+            <line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>
+          </svg>
           Map
         </h2>
         <span class="map-badge">Loading…</span>
         <button class="mc-btn mc-btn-secondary" id="map-refresh">↻ Refresh</button>
       </div>
-      <div id="map-container"><div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div></div>`;
-
+      <div id="map-container">
+        <div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>
+      </div>`;
     this.shadowRoot.querySelector('#map-refresh').addEventListener('click', () => this._loadAndDraw());
   }
 
