@@ -9,6 +9,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (
@@ -41,36 +42,38 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
     @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_GET_STATE})
     @callback
     def ws_get_state(hass, connection, msg):
-        """Return overall integration state and meshcore connection info."""
-        entry_id = _get_meshcore_entry_id(hass)
-        meshcore_connected = False
-        node_info: dict[str, Any] = {}
+        """Return overall integration state and node info from HA entities."""
+        # Connection = any meshcore config entry that is loaded
+        meshcore_entries = hass.config_entries.async_entries(MESHCORE_DOMAIN)
+        meshcore_connected = any(
+            e.state is ConfigEntryState.LOADED for e in meshcore_entries
+        )
 
-        if entry_id:
-            coordinator = hass.data.get(MESHCORE_DOMAIN, {}).get(entry_id, {}).get("coordinator")
-            if coordinator:
-                meshcore_connected = True
-                # Pull what we can from coordinator
-                try:
-                    node_info = {
-                        "name": getattr(coordinator, "device_name", None)
-                            or _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_name"),
-                        "pubkey": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_pubkey_prefix"),
-                        "battery_pct": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_battery_percentage"),
-                        "battery_v": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_battery_voltage"),
-                        "tx_power": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_tx_power"),
-                        "node_count": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_node_count"),
-                        "uptime": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_uptime"),
-                        "freq": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_frequency"),
-                        "region": _state_val(hass, f"sensor.meshcore_{_pubkey(hass)}_region"),
-                    }
-                except Exception:  # noqa: BLE001
-                    pass
+        # Build node_info by scanning ALL sensor.meshcore_* entities
+        node_info: dict[str, Any] = {}
+        all_sensors = _gather_all_meshcore_sensors(hass)
+
+        if all_sensors:
+            # Pick values by looking for common suffixes in entity IDs
+            node_info = {
+                "name":        _find_sensor(all_sensors, ["_adv_name", "_name", "_device_name"]),
+                "pubkey":      _find_sensor(all_sensors, ["_pubkey_prefix", "_public_key"]),
+                "battery_pct": _find_sensor(all_sensors, ["_battery_percentage", "_battery_pct", "_battery"]),
+                "battery_v":   _find_sensor(all_sensors, ["_battery_voltage"]),
+                "tx_power":    _find_sensor(all_sensors, ["_tx_power", "_txpower"]),
+                "uptime":      _find_sensor(all_sensors, ["_uptime"]),
+                "freq":        _find_sensor(all_sensors, ["_frequency", "_freq"]),
+                "region":      _find_sensor(all_sensors, ["_region"]),
+                "node_count":  _find_sensor(all_sensors, ["_node_count", "_nodes"]),
+                "rssi":        _find_sensor(all_sensors, ["_rssi"]),
+                "snr":         _find_sensor(all_sensors, ["_snr"]),
+            }
 
         connection.send_result(msg["id"], {
             "connected": meshcore_connected,
             "node_info": node_info,
             "messages_today": store.get_messages_today(),
+            "sensor_count": len(all_sensors),
         })
 
     websocket_api.async_register_command(hass, ws_get_state)
@@ -91,9 +94,18 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
     @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_GET_NODE_INFO})
     @callback
     def ws_get_node_info(hass, connection, msg):
-        """Return full node/device info from meshcore sensors."""
-        info = _gather_node_info(hass)
-        connection.send_result(msg["id"], info)
+        """Return full sensor dump from all meshcore entities."""
+        sensors = _gather_all_meshcore_sensors(hass)
+        # Also include binary_sensors
+        binary = {}
+        for state in hass.states.async_all("binary_sensor"):
+            if "meshcore" in state.entity_id:
+                binary[state.entity_id] = {
+                    "state": state.state,
+                    "attributes": dict(state.attributes),
+                    "last_changed": state.last_changed.isoformat() if state.last_changed else None,
+                }
+        connection.send_result(msg["id"], {"sensors": sensors, "binary_sensors": binary})
 
     websocket_api.async_register_command(hass, ws_get_node_info)
 
@@ -120,7 +132,6 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
                 all_msgs.extend(msgs_list)
             msgs = sorted(all_msgs, key=lambda m: m.get("timestamp", 0))
 
-        # Paginate before_id
         if before_id:
             ids = [m["id"] for m in msgs]
             if before_id in ids:
@@ -130,15 +141,16 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
         msgs = msgs[-limit:]
 
         aliases = store.get_all_aliases()
-        # Overlay aliases onto sender names
+        enriched = []
         for m in msgs:
-            pk = m.get("sender_pubkey")
+            m2 = dict(m)
+            pk = m2.get("sender_pubkey")
             if pk and pk in aliases:
-                m = dict(m)
-                m["sender_name"] = aliases[pk]
+                m2["sender_name"] = aliases[pk]
+            enriched.append(m2)
 
         connection.send_result(msg["id"], {
-            "messages": msgs,
+            "messages": enriched,
             "total": len(store.get_messages(cid) if cid else []),
         })
 
@@ -163,7 +175,8 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
 
         channel_idx = msg.get("channel_idx")
         contact_pubkey = msg.get("contact_pubkey")
-        cid = msg.get("conversation_id", f"ch_{channel_idx}" if channel_idx is not None else f"dm_{contact_pubkey}")
+        cid = msg.get("conversation_id",
+                       f"ch_{channel_idx}" if channel_idx is not None else f"dm_{contact_pubkey}")
 
         async def _send():
             try:
@@ -180,7 +193,8 @@ def async_register_commands(hass: HomeAssistant, store: MeshCoreUIStore) -> None
                         blocking=True,
                     )
                 else:
-                    connection.send_error(msg["id"], "missing_target", "Specify channel_idx or contact_pubkey")
+                    connection.send_error(msg["id"], "missing_target",
+                                          "Specify channel_idx or contact_pubkey")
                     return
 
                 outgoing = {
@@ -438,64 +452,142 @@ def _get_meshcore_entry_id(hass: HomeAssistant) -> str | None:
     return None
 
 
-def _pubkey(hass: HomeAssistant) -> str:
-    """Try to find local device pubkey prefix from entities."""
-    for state in hass.states.async_all():
-        eid = state.entity_id
-        if eid.startswith("sensor.meshcore_") and eid.endswith("_battery_percentage"):
-            parts = eid.split("_")
-            if len(parts) >= 3:
-                return parts[2]  # pubkey segment
-    return "local"
+def _gather_all_meshcore_sensors(hass: HomeAssistant) -> dict[str, Any]:
+    """Return all sensor.meshcore_* entities as a dict keyed by entity_id."""
+    result = {}
+    for state in hass.states.async_all("sensor"):
+        if "meshcore" in state.entity_id:
+            result[state.entity_id] = {
+                "state": state.state,
+                "attributes": dict(state.attributes),
+                "last_changed": state.last_changed.isoformat() if state.last_changed else None,
+                "friendly_name": state.attributes.get("friendly_name", state.entity_id),
+            }
+    return result
+
+
+def _find_sensor(sensors: dict, suffixes: list[str]) -> Any:
+    """Find the first sensor whose entity_id ends with one of the given suffixes."""
+    for suffix in suffixes:
+        for eid, data in sensors.items():
+            if eid.endswith(suffix):
+                val = data["state"]
+                if val not in ("unknown", "unavailable", None, ""):
+                    return val
+    return None
 
 
 def _gather_contacts(hass: HomeAssistant, store: MeshCoreUIStore) -> list[dict]:
-    """Gather contact list from meshcore binary_sensor entities."""
+    """
+    Gather contact list from meshcore entities.
+    meshcore-ha creates entities per-contact; we scan all binary_sensor.meshcore_*
+    and sensor.meshcore_* entities, group by friendly_name / device, and extract
+    all useful attributes including lat/lon.
+    """
     contacts: list[dict] = []
     aliases = store.get_all_aliases()
+    seen_pubkeys: set[str] = set()
+
+    # Possible attribute names for lat/lon used by meshcore-ha
+    LAT_KEYS = ("latitude", "lat", "gps_lat", "position_lat")
+    LON_KEYS = ("longitude", "lon", "lng", "gps_lon", "position_lon")
+
+    def _extract_latlon(attrs: dict):
+        lat = next((attrs[k] for k in LAT_KEYS if k in attrs and attrs[k] is not None), None)
+        lon = next((attrs[k] for k in LON_KEYS if k in attrs and attrs[k] is not None), None)
+        try:
+            return float(lat) if lat is not None else None, float(lon) if lon is not None else None
+        except (TypeError, ValueError):
+            return None, None
 
     for state in hass.states.async_all():
         eid = state.entity_id
-        # binary_sensor.meshcore_<pubkey>_<contact_pubkey>_messages  OR
-        # binary_sensor.meshcore_<pubkey>_contact  style
-        if not eid.startswith("binary_sensor.meshcore_"):
+        if "meshcore" not in eid:
             continue
-        if "_contact" not in eid and "_messages" not in eid:
+        if not (eid.startswith("binary_sensor.") or eid.startswith("sensor.")):
             continue
 
         attrs = state.attributes
-        pubkey_prefix = attrs.get("public_key") or attrs.get("pubkey_prefix")
+
+        # Try multiple attribute names that meshcore-ha might use
+        pubkey_prefix = (
+            attrs.get("public_key")
+            or attrs.get("pubkey_prefix")
+            or attrs.get("contact_key")
+            or attrs.get("key_prefix")
+        )
         if not pubkey_prefix:
             continue
+        if pubkey_prefix in seen_pubkeys:
+            # Already added this contact — enrich existing entry with lat/lon if found
+            lat, lon = _extract_latlon(attrs)
+            if lat is not None and lon is not None:
+                for c in contacts:
+                    if c["pubkey_prefix"] == pubkey_prefix:
+                        c["lat"] = lat
+                        c["lon"] = lon
+            continue
 
-        name = aliases.get(pubkey_prefix) or attrs.get("adv_name") or attrs.get("friendly_name", pubkey_prefix)
+        seen_pubkeys.add(pubkey_prefix)
+
+        name = (
+            aliases.get(pubkey_prefix)
+            or attrs.get("adv_name")
+            or attrs.get("contact_name")
+            or attrs.get("name")
+            or attrs.get("friendly_name", pubkey_prefix)
+        )
+
+        lat, lon = _extract_latlon(attrs)
+
         contacts.append({
             "pubkey_prefix": pubkey_prefix,
             "name": name,
-            "last_seen": attrs.get("last_advert"),
-            "snr": attrs.get("last_snr"),
-            "path": attrs.get("path"),
-            "type": attrs.get("type", "contact"),
-            "battery_pct": attrs.get("battery_percentage"),
+            "last_seen": attrs.get("last_advert") or attrs.get("last_seen") or attrs.get("last_heard"),
+            "snr":  attrs.get("last_snr") or attrs.get("snr"),
+            "rssi": attrs.get("last_rssi") or attrs.get("rssi"),
+            "path": attrs.get("path") or attrs.get("via"),
+            "type": attrs.get("type") or attrs.get("node_type", "contact"),
+            "battery_pct": attrs.get("battery_percentage") or attrs.get("battery_pct"),
             "alias": aliases.get(pubkey_prefix),
             "entity_id": eid,
+            "lat": lat,
+            "lon": lon,
         })
 
-    return contacts
-
-
-def _gather_node_info(hass: HomeAssistant) -> dict:
-    """Gather comprehensive node info from meshcore sensor entities."""
-    info: dict[str, Any] = {"sensors": {}, "repeaters": [], "contacts": []}
-
-    for state in hass.states.async_all():
-        eid = state.entity_id
-        if not eid.startswith("sensor.meshcore_"):
+    # Also scan device_tracker.meshcore_* for GPS positions
+    for state in hass.states.async_all("device_tracker"):
+        if "meshcore" not in state.entity_id:
             continue
-        info["sensors"][eid] = {
-            "state": state.state,
-            "attributes": dict(state.attributes),
-            "last_changed": state.last_changed.isoformat() if state.last_changed else None,
-        }
+        attrs = state.attributes
+        lat = attrs.get("latitude")
+        lon = attrs.get("longitude")
+        if lat is None or lon is None:
+            continue
+        pubkey_prefix = (
+            attrs.get("public_key") or attrs.get("pubkey_prefix") or state.entity_id
+        )
+        # Enrich existing contact if we can match it
+        matched = False
+        for c in contacts:
+            if c["pubkey_prefix"] == pubkey_prefix or c["entity_id"].split(".")[-1] in state.entity_id:
+                c["lat"] = float(lat)
+                c["lon"] = float(lon)
+                matched = True
+                break
+        if not matched and pubkey_prefix not in seen_pubkeys:
+            seen_pubkeys.add(pubkey_prefix)
+            contacts.append({
+                "pubkey_prefix": pubkey_prefix,
+                "name": aliases.get(pubkey_prefix) or attrs.get("friendly_name", pubkey_prefix),
+                "last_seen": None,
+                "snr": None, "rssi": None, "path": None,
+                "type": "device_tracker",
+                "battery_pct": attrs.get("battery_level"),
+                "alias": aliases.get(pubkey_prefix),
+                "entity_id": state.entity_id,
+                "lat": float(lat),
+                "lon": float(lon),
+            })
 
-    return info
+    return contacts
