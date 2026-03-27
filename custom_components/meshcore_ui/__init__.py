@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.components import frontend, panel_custom
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, Event, callback
 
@@ -135,12 +136,14 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
     """Register the sidebar panel pointing at our JS bundle."""
     root = Path(__file__).parent
 
-    # Serve our static files
-    hass.http.register_static_path(
-        "/meshcore_ui",
-        str(root / "ha_frontend"),
-        cache_headers=False,
-    )
+    # Serve our static files — use the current HA API
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            url_path="/meshcore_ui",
+            path=str(root / "ha_frontend"),
+            cache_headers=False,
+        )
+    ])
 
     await panel_custom.async_register_panel(
         hass,
