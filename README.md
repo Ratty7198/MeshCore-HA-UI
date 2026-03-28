@@ -1,3 +1,4 @@
+![MeshCore Banner](meshcore-ui-banner.png)
 # MeshCore UI for Home Assistant
 
 > **Beta / Work in Progress** — This integration is under active development. Expect rough edges and breaking changes. If you run into issues, please [open an issue on GitHub](https://github.com/Daring-Designs/meshcore-ui-ha/issues).
