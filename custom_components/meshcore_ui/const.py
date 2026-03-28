@@ -4,7 +4,7 @@ DOMAIN = "meshcore_ui"
 INTEGRATION_NAME = "MeshCore UI"
 PANEL_URL = "meshcore-ui"
 PANEL_TITLE = "MeshCore"
-PANEL_ICON = "mdi:radio-tower"
+PANEL_ICON = "mdi:router-wireless"
 
 # Storage
 STORAGE_VERSION = 1
