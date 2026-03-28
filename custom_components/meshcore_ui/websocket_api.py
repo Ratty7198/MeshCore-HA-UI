@@ -479,115 +479,128 @@ def _find_sensor(sensors: dict, suffixes: list[str]) -> Any:
 
 def _gather_contacts(hass: HomeAssistant, store: MeshCoreUIStore) -> list[dict]:
     """
-    Gather contact list from meshcore entities.
-    meshcore-ha creates entities per-contact; we scan all binary_sensor.meshcore_*
-    and sensor.meshcore_* entities, group by friendly_name / device, and extract
-    all useful attributes including lat/lon.
+    Gather contact list from meshcore-ha binary sensor entities.
+
+    meshcore-ha creates binary_sensor.meshcore_* contact sensors with these
+    documented attributes: pubkey_prefix, adv_name, added_to_node, type,
+    last_advert, last_advert_formatted, latitude (optional), longitude (optional)
     """
     contacts: list[dict] = []
     aliases = store.get_all_aliases()
-    seen_pubkeys: set[str] = set()
+    seen: set[str] = set()
 
-    # Possible attribute names for lat/lon used by meshcore-ha
-    LAT_KEYS = ("latitude", "lat", "gps_lat", "position_lat")
-    LON_KEYS = ("longitude", "lon", "lng", "gps_lon", "position_lon")
-
-    def _extract_latlon(attrs: dict):
-        lat = next((attrs[k] for k in LAT_KEYS if k in attrs and attrs[k] is not None), None)
-        lon = next((attrs[k] for k in LON_KEYS if k in attrs and attrs[k] is not None), None)
-        try:
-            return float(lat) if lat is not None else None, float(lon) if lon is not None else None
-        except (TypeError, ValueError):
-            return None, None
-
-    for state in hass.states.async_all():
+    # Primary: binary_sensor.meshcore_* contact sensors
+    for state in hass.states.async_all("binary_sensor"):
         eid = state.entity_id
         if "meshcore" not in eid:
             continue
-        if not (eid.startswith("binary_sensor.") or eid.startswith("sensor.")):
-            continue
-
         attrs = state.attributes
 
-        # Try multiple attribute names that meshcore-ha might use
-        pubkey_prefix = (
-            attrs.get("public_key")
-            or attrs.get("pubkey_prefix")
-            or attrs.get("contact_key")
-            or attrs.get("key_prefix")
-        )
-        if not pubkey_prefix:
+        # meshcore-ha contact sensors always have pubkey_prefix in attrs
+        pubkey = attrs.get("pubkey_prefix") or attrs.get("public_key")
+        if not pubkey:
             continue
-        if pubkey_prefix in seen_pubkeys:
-            # Already added this contact — enrich existing entry with lat/lon if found
-            lat, lon = _extract_latlon(attrs)
-            if lat is not None and lon is not None:
-                for c in contacts:
-                    if c["pubkey_prefix"] == pubkey_prefix:
-                        c["lat"] = lat
-                        c["lon"] = lon
+        if pubkey in seen:
             continue
+        seen.add(pubkey)
 
-        seen_pubkeys.add(pubkey_prefix)
+        name = aliases.get(pubkey) or attrs.get("adv_name") or pubkey
 
-        name = (
-            aliases.get(pubkey_prefix)
-            or attrs.get("adv_name")
-            or attrs.get("contact_name")
-            or attrs.get("name")
-            or attrs.get("friendly_name", pubkey_prefix)
-        )
+        # Timestamps
+        last_advert_raw = attrs.get("last_advert")
+        last_advert_iso = attrs.get("last_advert_formatted")
+        if last_advert_iso:
+            last_seen = last_advert_iso
+        elif last_advert_raw:
+            try:
+                from datetime import datetime, timezone
+                last_seen = datetime.fromtimestamp(
+                    int(last_advert_raw), tz=timezone.utc
+                ).isoformat()
+            except Exception:
+                last_seen = str(last_advert_raw)
+        else:
+            last_seen = None
 
-        lat, lon = _extract_latlon(attrs)
+        # GPS
+        lat = attrs.get("latitude")
+        lon = attrs.get("longitude")
+        try:
+            lat = float(lat) if lat is not None else None
+            lon = float(lon) if lon is not None else None
+        except (TypeError, ValueError):
+            lat = lon = None
+
+        # Node type label
+        node_type_map = {1: "client", 2: "repeater", 3: "room_server", 4: "sensor"}
+        raw_type = attrs.get("type")
+        try:
+            node_type = node_type_map.get(int(raw_type), "contact") if raw_type is not None else "contact"
+        except (TypeError, ValueError):
+            node_type = "contact"
 
         contacts.append({
-            "pubkey_prefix": pubkey_prefix,
+            "pubkey_prefix": pubkey,
             "name": name,
-            "last_seen": attrs.get("last_advert") or attrs.get("last_seen") or attrs.get("last_heard"),
-            "snr":  attrs.get("last_snr") or attrs.get("snr"),
-            "rssi": attrs.get("last_rssi") or attrs.get("rssi"),
-            "path": attrs.get("path") or attrs.get("via"),
-            "type": attrs.get("type") or attrs.get("node_type", "contact"),
-            "battery_pct": attrs.get("battery_percentage") or attrs.get("battery_pct"),
-            "alias": aliases.get(pubkey_prefix),
+            "alias": aliases.get(pubkey),
+            "last_seen": last_seen,
+            "last_advert_ts": last_advert_raw,
+            "snr": attrs.get("last_snr"),
+            "rssi": attrs.get("last_rssi"),
+            "path": attrs.get("out_path") or attrs.get("path"),
+            "type": node_type,
+            "added_to_node": attrs.get("added_to_node", False),
+            "battery_pct": attrs.get("battery_percentage"),
             "entity_id": eid,
+            "state": state.state,
             "lat": lat,
             "lon": lon,
         })
 
-    # Also scan device_tracker.meshcore_* for GPS positions
+    # Supplement: device_tracker.meshcore_*_gps for GPS
     for state in hass.states.async_all("device_tracker"):
-        if "meshcore" not in state.entity_id:
+        eid = state.entity_id
+        if "meshcore" not in eid or not eid.endswith("_gps"):
             continue
         attrs = state.attributes
         lat = attrs.get("latitude")
         lon = attrs.get("longitude")
         if lat is None or lon is None:
             continue
-        pubkey_prefix = (
-            attrs.get("public_key") or attrs.get("pubkey_prefix") or state.entity_id
-        )
-        # Enrich existing contact if we can match it
-        matched = False
-        for c in contacts:
-            if c["pubkey_prefix"] == pubkey_prefix or c["entity_id"].split(".")[-1] in state.entity_id:
-                c["lat"] = float(lat)
-                c["lon"] = float(lon)
-                matched = True
-                break
-        if not matched and pubkey_prefix not in seen_pubkeys:
-            seen_pubkeys.add(pubkey_prefix)
-            contacts.append({
-                "pubkey_prefix": pubkey_prefix,
-                "name": aliases.get(pubkey_prefix) or attrs.get("friendly_name", pubkey_prefix),
-                "last_seen": None,
-                "snr": None, "rssi": None, "path": None,
-                "type": "device_tracker",
-                "battery_pct": attrs.get("battery_level"),
-                "alias": aliases.get(pubkey_prefix),
-                "entity_id": state.entity_id,
-                "lat": float(lat),
-                "lon": float(lon),
-            })
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            continue
 
-    return contacts
+        pubkey = attrs.get("pubkey_prefix") or attrs.get("public_key")
+        if pubkey:
+            for c in contacts:
+                if c["pubkey_prefix"] == pubkey and c["lat"] is None:
+                    c["lat"] = lat
+                    c["lon"] = lon
+                    break
+            else:
+                if pubkey not in seen:
+                    seen.add(pubkey)
+                    contacts.append({
+                        "pubkey_prefix": pubkey,
+                        "name": aliases.get(pubkey) or attrs.get("friendly_name", pubkey),
+                        "alias": aliases.get(pubkey),
+                        "last_seen": None, "last_advert_ts": None,
+                        "snr": None, "rssi": None, "path": None,
+                        "type": "gps_tracker", "added_to_node": False,
+                        "battery_pct": attrs.get("battery_level"),
+                        "entity_id": eid, "state": "fresh",
+                        "lat": lat, "lon": lon,
+                    })
+
+    # Sort by last_advert timestamp descending, cap at 100
+    def _ts(c: dict) -> float:
+        try:
+            return float(c.get("last_advert_ts") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    contacts.sort(key=_ts, reverse=True)
+    return contacts[:100]
+

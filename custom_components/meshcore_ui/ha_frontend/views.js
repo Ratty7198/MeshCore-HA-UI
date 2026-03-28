@@ -269,8 +269,9 @@ export class MeshCoreContactsView extends HTMLElement {
   }
 
   set hass(val) {
+    const firstSet = this._hass === null;
     this._hass = val;
-    if (!this._contacts.length) this._load();
+    if (firstSet) this._load();
   }
 
   async _load() {
@@ -477,8 +478,10 @@ export class MeshCoreStatsView extends HTMLElement {
   }
 
   set hass(val) {
+    const firstSet = this._hass === null;
     this._hass = val;
-    this._load();
+    // Only load on first set — refresh button handles subsequent loads
+    if (firstSet) this._load();
   }
 
   async _load() {
@@ -563,65 +566,63 @@ export class MeshCoreStatsView extends HTMLElement {
     const binary = this._nodeInfo?.binary_sensors || {};
     const sensorCount = this._state.sensor_count || Object.keys(sensors).length;
 
-    // Pretty-print friendly sensor name from entity ID
-    const prettyName = (eid) => {
-      return eid
-        .replace(/^(sensor|binary_sensor)\./, '')
-        .replace(/^meshcore_/, '')
-        .replace(/_/g, ' ')
-        .replace(/\b\w/g, c => c.toUpperCase());
-    };
+    const prettyName = (eid) => eid
+      .replace(/^(sensor|binary_sensor)\./, '')
+      .replace(/^meshcore_/, '')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase());
 
-    wrap.innerHTML = `
-      <!-- Summary cards -->
-      <div class="stats-grid">
-        ${statCard('💬', 'Messages Today', this._state.messages_today ?? 0)}
-        ${statCard('📡', 'Node Name', ni.name || '—')}
-        ${statCard('🔋', 'Battery', ni.battery_pct ? \`\${ni.battery_pct}%\` : '—')}
-        ${statCard('📶', 'TX Power', ni.tx_power ? \`\${ni.tx_power} dBm\` : '—')}
-        ${statCard('🌐', 'Region', ni.region || '—')}
-        ${statCard('⏱️', 'Uptime', formatUptime(ni.uptime))}
-      </div>
+    // Build cards using string concat to avoid nested template literal issues
+    const batteryStr  = ni.battery_pct ? ni.battery_pct + '%'      : '—';
+    const txStr       = ni.tx_power    ? ni.tx_power    + ' dBm'   : '—';
+    const rssiStr     = ni.rssi        ? ni.rssi        + ' dBm'   : null;
+    const snrStr      = ni.snr         ? ni.snr         + ' dB'    : null;
 
-      <!-- Connection card -->
-      <div class="mc-card">
-        <div class="section-title">Connection</div>
-        ${infoRow('Status', this._state.connected ? '🟢 Connected' : '🔴 Disconnected')}
-        ${ni.pubkey ? infoRow('Public Key Prefix', ni.pubkey) : ''}
-        ${ni.freq   ? infoRow('Frequency', ni.freq) : ''}
-        ${ni.rssi   ? infoRow('RSSI', \`\${ni.rssi} dBm\`) : ''}
-        ${ni.snr    ? infoRow('SNR', \`\${ni.snr} dB\`) : ''}
-        ${infoRow('MeshCore Sensors Found', sensorCount)}
-      </div>
+    let sensorRows = '';
+    Object.entries(sensors).sort(([a],[b]) => a.localeCompare(b)).forEach(([eid, s]) => {
+      const unit = s.attributes && s.attributes.unit_of_measurement
+        ? '<span class="sensor-unit">' + escHtml(s.attributes.unit_of_measurement) + '</span>'
+        : '';
+      sensorRows += '<div class="sensor-row">'
+        + '<span class="sensor-name" title="' + escHtml(eid) + '">' + escHtml(prettyName(eid)) + '</span>'
+        + '<span class="sensor-val">' + escHtml(s.state) + unit + '</span>'
+        + '</div>';
+    });
+    Object.entries(binary).sort(([a],[b]) => a.localeCompare(b)).forEach(([eid, s]) => {
+      sensorRows += '<div class="sensor-row">'
+        + '<span class="sensor-name" title="' + escHtml(eid) + '">' + escHtml(prettyName(eid)) + '</span>'
+        + '<span class="sensor-val">' + (s.state === 'on' ? '\u2705 on' : '\u26aa off') + '</span>'
+        + '</div>';
+    });
 
-      <!-- All sensors -->
-      ${sensorCount > 0 ? \`
-        <div class="mc-card">
-          <div class="section-title" style="margin-bottom:8px">All MeshCore Entities (\${sensorCount})</div>
-          <div class="sensors-list">
-            \${Object.entries(sensors).sort(([a],[b])=>a.localeCompare(b)).map(([eid, s]) => \`
-              <div class="sensor-row">
-                <span class="sensor-name" title="\${escHtml(eid)}">\${escHtml(prettyName(eid))}</span>
-                <span class="sensor-val">
-                  \${escHtml(s.state)}
-                  \${s.attributes?.unit_of_measurement ? \`<span class="sensor-unit">\${escHtml(s.attributes.unit_of_measurement)}</span>\` : ''}
-                </span>
-              </div>\`).join('')}
-            \${Object.entries(binary).sort(([a],[b])=>a.localeCompare(b)).map(([eid, s]) => \`
-              <div class="sensor-row">
-                <span class="sensor-name" title="\${escHtml(eid)}">\${escHtml(prettyName(eid))}</span>
-                <span class="sensor-val \${s.state === 'on' ? '' : ''}">\${s.state === 'on' ? '✅ on' : '⭕ off'}</span>
-              </div>\`).join('')}
-          </div>
-        </div>\` : \`
-        <div class="mc-card">
-          <div class="section-title">No MeshCore Sensor Entities Found</div>
-          <p style="font-size:13px;color:var(--mc-text2);margin-top:8px">
-            Make sure the <strong>meshcore</strong> integration is installed and your radio is connected.
-            Sensor entities should appear under Developer Tools → States with names starting with <code>sensor.meshcore_</code>.
-          </p>
-        </div>\`}
-    `;
+    const sensorsBlock = sensorCount > 0
+      ? '<div class="mc-card"><div class="section-title" style="margin-bottom:8px">All MeshCore Entities ('
+          + sensorCount + ')</div><div class="sensors-list">' + sensorRows + '</div></div>'
+      : '<div class="mc-card"><div class="section-title">No MeshCore Sensor Entities Found</div>'
+          + '<p style="font-size:13px;color:var(--mc-text2);margin-top:8px">'
+          + 'Make sure the <strong>meshcore</strong> integration is installed and your radio is connected. '
+          + 'Sensor entities should appear under Developer Tools \u2192 States as <code>sensor.meshcore_*</code>.'
+          + '</p></div>';
+
+    wrap.innerHTML =
+      '<div class="stats-grid">'
+      + statCard('\ud83d\udcac', 'Messages Today', this._state.messages_today ?? 0)
+      + statCard('\ud83d\udce1', 'Node Name', ni.name || '\u2014')
+      + statCard('\ud83d\udd0b', 'Battery', batteryStr)
+      + statCard('\ud83d\udcf6', 'TX Power', txStr)
+      + statCard('\ud83c\udf10', 'Region', ni.region || '\u2014')
+      + statCard('\u23f1\ufe0f', 'Uptime', formatUptime(ni.uptime))
+      + '</div>'
+      + '<div class="mc-card">'
+      + '<div class="section-title">Connection</div>'
+      + infoRow('Status', this._state.connected ? '\ud83d\udfe2 Connected' : '\ud83d\udd34 Disconnected')
+      + (ni.pubkey ? infoRow('Public Key Prefix', ni.pubkey) : '')
+      + (ni.freq   ? infoRow('Frequency', ni.freq) : '')
+      + (rssiStr   ? infoRow('RSSI', rssiStr) : '')
+      + (snrStr    ? infoRow('SNR', snrStr) : '')
+      + infoRow('MeshCore Sensors', sensorCount)
+      + '</div>'
+      + sensorsBlock;
   }
 
   _render() {
@@ -761,218 +762,281 @@ customElements.define('meshcore-console-view', MeshCoreConsoleView);
 
 
 // ── Map View ──────────────────────────────────────────────────────────────────
+// Leaflet is loaded into document.head to avoid HA CSP restrictions on shadow DOM.
+// CartoDB tiles used — free, no API key, no usage complaints.
+
+const LEAFLET_JS  = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js';
+const LEAFLET_CSS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';
+
+// Minimal Leaflet CSS injected directly into shadow roots to fix shadow DOM tile rendering.
+// (The document.head CSS doesn't cascade into shadow DOM, causing the jigsaw/blank-tile effect.)
+const LEAFLET_SHADOW_CSS = `
+  .leaflet-pane, .leaflet-tile, .leaflet-marker-icon, .leaflet-marker-shadow,
+  .leaflet-tile-pane, .leaflet-overlay-pane, .leaflet-shadow-pane,
+  .leaflet-marker-pane, .leaflet-tooltip-pane, .leaflet-popup-pane,
+  .leaflet-map-pane canvas, .leaflet-map-pane svg { position: absolute; }
+  .leaflet-map-pane { z-index: 400; }
+  .leaflet-tile-pane { z-index: 200; }
+  .leaflet-overlay-pane { z-index: 400; }
+  .leaflet-shadow-pane { z-index: 500; }
+  .leaflet-marker-pane { z-index: 600; }
+  .leaflet-tooltip-pane { z-index: 650; }
+  .leaflet-popup-pane { z-index: 700; }
+  .leaflet-map-pane { top: 0; left: 0; }
+  .leaflet-tile { filter: inherit; visibility: inherit; }
+  .leaflet-tile-loaded { visibility: inherit; }
+  .leaflet-zoom-box { width: 0; height: 0; box-sizing: border-box; z-index: 800; }
+  .leaflet-overlay-pane svg { -moz-user-select: none; }
+  .leaflet-pane > svg, .leaflet-pane > canvas { position: absolute; left: 0; top: 0; }
+  .leaflet-container { overflow: hidden; }
+  .leaflet-tile, .leaflet-marker-icon, .leaflet-marker-shadow {
+    -webkit-user-select: none; -moz-user-select: none; user-select: none;
+    -webkit-user-drag: none; }
+  .leaflet-tile::selection { background: transparent; }
+  .leaflet-tile::-moz-selection { background: transparent; }
+  .leaflet-image-layer, .leaflet-layer { position: absolute; left: 0; top: 0; }
+  .leaflet-container { -webkit-tap-highlight-color: transparent; background: #1a1a2e; }
+  .leaflet-container a { -webkit-tap-highlight-color: rgba(51,181,229,.4); }
+  .leaflet-tile { box-sizing: border-box !important; }
+  .leaflet-zoom-anim .leaflet-zoom-animated { will-change: transform; }
+  .leaflet-zoom-anim .leaflet-zoom-animated { -webkit-transition: -webkit-transform 0.25s cubic-bezier(0,0,0.25,1); transition: transform 0.25s cubic-bezier(0,0,0.25,1); }
+  .leaflet-pan-anim .leaflet-tile, .leaflet-zoom-anim .leaflet-tile { -webkit-transition: none; transition: none; }
+  .leaflet-popup { position: absolute; text-align: center; margin-bottom: 20px; }
+  .leaflet-popup-content-wrapper { padding: 1px; text-align: left; border-radius: 8px; background: white; color: #333; box-shadow: 0 3px 14px rgba(0,0,0,.4); }
+  .leaflet-popup-content { margin: 10px 12px; line-height: 1.4; }
+  .leaflet-popup-tip-container { width: 40px; height: 20px; position: absolute; left: 50%; margin-left: -20px; overflow: hidden; pointer-events: none; }
+  .leaflet-popup-tip { background: white; width: 17px; height: 17px; padding: 1px; margin: -10px auto 0; transform: rotate(45deg); box-shadow: 0 3px 14px rgba(0,0,0,.4); }
+  .leaflet-popup-close-button { position: absolute; top: 0; right: 0; border: none; text-align: center; width: 18px; height: 14px; font: 16px/14px Tahoma,Verdana,sans-serif; color: #757575; text-decoration: none; background: transparent; }
+  .leaflet-popup-close-button:hover { color: #585858; }
+  .leaflet-control { position: relative; z-index: 800; pointer-events: visiblePainted; pointer-events: auto; }
+  .leaflet-top, .leaflet-bottom { position: absolute; z-index: 1000; pointer-events: none; }
+  .leaflet-top { top: 0; } .leaflet-right { right: 0; }
+  .leaflet-bottom { bottom: 0; } .leaflet-left { left: 0; }
+  .leaflet-control { float: left; clear: both; }
+  .leaflet-right .leaflet-control { float: right; }
+  .leaflet-top .leaflet-control { margin-top: 10px; }
+  .leaflet-bottom .leaflet-control { margin-bottom: 10px; }
+  .leaflet-left .leaflet-control { margin-left: 10px; }
+  .leaflet-right .leaflet-control { margin-right: 10px; }
+  .leaflet-control-zoom a { width: 26px; height: 26px; line-height: 26px; display: block; text-align: center; text-decoration: none; color: black; font: bold 18px 'Lucida Console',Monaco,monospace; background: white; border-bottom: 1px solid #ccc; }
+  .leaflet-control-zoom a:hover { background-color: #f4f4f4; }
+  .leaflet-control-zoom-in { border-radius: 4px 4px 0 0; }
+  .leaflet-control-zoom-out { border-radius: 0 0 4px 4px; }
+  .leaflet-control-zoom { border: 2px solid rgba(0,0,0,0.2); border-radius: 4px; box-shadow: none; }
+  .leaflet-bar { box-shadow: 0 1px 5px rgba(0,0,0,.65); border-radius: 4px; }
+  .leaflet-attribution-flag { display: inline !important; vertical-align: middle; width: 1em; height: 0.6667em; }
+  .leaflet-control-attribution { padding: 0 5px; background: rgba(255,255,255,.7); font-size: 11px; }
+  .leaflet-control-attribution a { text-decoration: none; } .leaflet-control-attribution a:hover { text-decoration: underline; }
+  .leaflet-container .leaflet-control-attribution { background: rgba(255,255,255,0.7); margin: 0; }
+  .leaflet-left .leaflet-control-scale { margin-left: 5px; }
+  .leaflet-bottom .leaflet-control-scale { margin-bottom: 5px; }
+  .leaflet-control-scale-line { padding: 0 5px 1px; font-size: 11px; white-space: nowrap; overflow: hidden; border: 2px solid #777; border-top: none; background: rgba(255,255,255,.5); }
+  .leaflet-div-icon { background: #fff; border: 1px solid #666; }
+`;
+
+let _leafletLoading = null;
+
+function _loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  if (_leafletLoading) return _leafletLoading;
+
+  _leafletLoading = new Promise((resolve, reject) => {
+    if (!document.querySelector('link[data-leaflet]')) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet'; link.href = LEAFLET_CSS_URL;
+      link.setAttribute('data-leaflet', '1');
+      document.head.appendChild(link);
+    }
+    const script = document.createElement('script');
+    script.src = LEAFLET_JS;
+    script.setAttribute('data-leaflet', '1');
+    script.onload  = () => { _leafletLoading = null; resolve(window.L); };
+    script.onerror = () => { _leafletLoading = null; reject(new Error('Leaflet failed to load')); };
+    document.head.appendChild(script);
+    setTimeout(() => reject(new Error('Leaflet load timeout')), 15000);
+  });
+  return _leafletLoading;
+}
 
 export class MeshCoreMapView extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._hass = null;
+    this._hass        = null;
     this._allContacts = [];
     this._gpsContacts = [];
-    this._loading = true;
+    this._leafletMap  = null;
+    this._loaded      = false;
   }
 
   set hass(val) {
+    const first = this._hass === null;
     this._hass = val;
-    this._loadAndDraw();
+    if (first) this._loadAndDraw();
+  }
+
+  disconnectedCallback() {
+    if (this._leafletMap) { this._leafletMap.remove(); this._leafletMap = null; }
   }
 
   async _loadAndDraw() {
-    this._loading = true;
     this._renderShell();
+    const badge = this.shadowRoot.querySelector('.map-badge');
+    if (badge) badge.textContent = 'Loading\u2026';
+
     try {
       const res = await this._hass.connection.sendMessagePromise({ type: 'meshcore_ui/get_contacts' });
       this._allContacts = res.contacts || [];
       this._gpsContacts = this._allContacts.filter(c => c.lat != null && c.lon != null);
     } catch (e) {
-      showToast(`Map load failed: ${e.message}`, 'error');
+      showToast('Map load failed: ' + e.message, 'error');
     }
-    this._loading = false;
-    this._drawMap();
-  }
 
-  _drawMap() {
-    const container = this.shadowRoot.querySelector('#map-container');
-    if (!container || this._loading) return;
-
-    // Update status badge
-    const badge = this.shadowRoot.querySelector('.map-badge');
     if (badge) {
       badge.textContent = this._gpsContacts.length > 0
-        ? `${this._gpsContacts.length} / ${this._allContacts.length} contacts on map`
-        : `${this._allContacts.length} contact(s) · no GPS data`;
+        ? this._gpsContacts.length + ' / ' + this._allContacts.length + ' on map'
+        : this._allContacts.length + ' contact(s) \u00b7 no GPS';
     }
 
-    // Always show the Leaflet map — use HA home location as default centre
-    const homeLat = this._hass?.config?.latitude ?? 51.5;
-    const homeLon = this._hass?.config?.longitude ?? -0.09;
-    const defaultZoom = this._gpsContacts.length > 0 ? null : 10; // null = auto-fit to markers
-
-    const markersJson = JSON.stringify(this._gpsContacts.map(c => ({
-      lat: c.lat, lon: c.lon,
-      name: c.name || c.pubkey_prefix,
-      snr: c.snr ?? null,
-      last_seen: c.last_seen ?? null,
-      path: c.path ?? null,
-      pubkey: c.pubkey_prefix,
-    })));
-
-    // Sidebar contact list (all contacts, GPS highlighted)
-    const sidebarHtml = this._allContacts.length === 0
-      ? '<div style="padding:20px 16px;color:#9ca3af;font-size:13px;text-align:center">No contacts yet.<br>Contacts appear once your node hears others.</div>'
-      : this._allContacts.map(c => `
-          <div class="cl-item ${c.lat != null ? 'cl-has-gps' : ''}" data-lat="${c.lat ?? ''}" data-lon="${c.lon ?? ''}">
-            <div class="cl-dot" style="background:${c.lat != null ? '#22c55e' : '#4b5563'}"></div>
-            <div class="cl-body">
-              <div class="cl-name">${escHtml(c.name || c.pubkey_prefix)}</div>
-              <div class="cl-meta">
-                ${c.snr != null ? `<span style="color:${snrColor(c.snr)}">${c.snr} dB</span> · ` : ''}
-                ${c.lat != null ? '📍 GPS' : 'No GPS'}
-                ${c.last_seen ? ' · ' + formatTime(c.last_seen) : ''}
-              </div>
-            </div>
-          </div>`).join('');
-
-    const mapHtml = `<!DOCTYPE html><html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"><\/script>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    html, body { width:100%; height:100%; font-family:sans-serif; }
-    #map { width:100%; height:100%; }
-    .mc-popup { font-size:13px; min-width:160px; line-height:1.5; }
-    .mc-popup strong { display:block; margin-bottom:3px; font-size:14px; }
-    .mc-popup .row { color:#6b7280; font-size:12px; margin-top:1px; }
-    .home-marker { font-size:20px; line-height:1; }
-  </style>
-</head>
-<body>
-<div id="map"></div>
-<script>
-  const HOME_LAT = ${homeLat};
-  const HOME_LON = ${homeLon};
-  const DEFAULT_ZOOM = ${defaultZoom !== null ? defaultZoom : 'null'};
-  const markers = ${markersJson};
-
-  const map = L.map('map', { zoomControl: true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
-    maxZoom: 19
-  }).addTo(map);
-
-  // Home marker
-  const homeIcon = L.divIcon({
-    html: '<div class="home-marker">🏠</div>',
-    className: '', iconSize: [24,24], iconAnchor: [12,20]
-  });
-  L.marker([HOME_LAT, HOME_LON], {icon: homeIcon})
-    .addTo(map)
-    .bindPopup('<strong>Home</strong><div class="row">HA home location</div>');
-
-  const snrColor = snr => {
-    const n = parseFloat(snr);
-    if (isNaN(n)) return '#6b7280';
-    if (n >= 5)   return '#22c55e';
-    if (n >= 0)   return '#eab308';
-    if (n >= -10) return '#f97316';
-    return '#ef4444';
-  };
-
-  const fmtTime = ts => {
-    if (!ts) return null;
-    const d = new Date(ts); if (isNaN(d)) return null;
-    const diff = (Date.now() - d) / 1000;
-    if (diff < 60)    return 'just now';
-    if (diff < 3600)  return Math.floor(diff/60) + 'm ago';
-    if (diff < 86400) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    return d.toLocaleDateString([],{month:'short',day:'numeric'});
-  };
-
-  const latlngs = [[HOME_LAT, HOME_LON]];
-
-  markers.forEach(m => {
-    const color = snrColor(m.snr);
-    const icon = L.divIcon({
-      html: '<div style="width:16px;height:16px;border-radius:50%;background:'+color+';border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.5)"></div>',
-      className: '', iconSize: [16,16], iconAnchor: [8,8]
-    });
-    const ts = fmtTime(m.last_seen);
-    const popup = '<div class="mc-popup">'
-      + '<strong>' + (m.name || m.pubkey) + '</strong>'
-      + '<div class="row" style="font-family:monospace;font-size:11px">' + (m.pubkey||'') + '</div>'
-      + (m.snr != null ? '<div class="row">SNR: <span style="color:'+color+'">'+m.snr+' dB</span></div>' : '')
-      + (ts   ? '<div class="row">Last seen: '+ts+'</div>' : '')
-      + (m.path ? '<div class="row">Path: '+m.path+'</div>' : '')
-      + '<div class="row">'+m.lat.toFixed(5)+', '+m.lon.toFixed(5)+'</div>'
-      + '</div>';
-    L.marker([m.lat, m.lon], {icon}).addTo(map).bindPopup(popup);
-    latlngs.push([m.lat, m.lon]);
-  });
-
-  // Fit view
-  if (markers.length > 0) {
-    map.fitBounds(latlngs, {padding:[40,40], maxZoom:14});
-  } else {
-    map.setView([HOME_LAT, HOME_LON], DEFAULT_ZOOM || 10);
+    this._renderSidebar();
+    await this._drawMap();
   }
 
-  // Listen for fly-to messages from parent
-  window.addEventListener('message', e => {
-    if (e.data && e.data.type === 'fly_to') {
-      map.flyTo([e.data.lat, e.data.lon], 15, {duration: 1.2});
+  _renderSidebar() {
+    const sidebar = this.shadowRoot.querySelector('.mc-map-sidebar');
+    if (!sidebar) return;
+
+    let html = '<div class="cl-header">Contacts (' + this._allContacts.length + ')</div>';
+
+    if (this._allContacts.length === 0) {
+      html += '<div class="cl-empty">No contacts yet.<br>They appear once your node hears others on the mesh.</div>';
+    } else {
+      this._allContacts.forEach(c => {
+        const hasGps   = c.lat != null && c.lon != null;
+        const dotColor = c.state === 'fresh' ? '#22c55e' : c.state === 'stale' ? '#eab308' : '#4b5563';
+        const snrHtml  = c.snr != null
+          ? '<span style="color:' + snrColor(c.snr) + '">' + escHtml(String(c.snr)) + 'dB</span> &middot; '
+          : '';
+        const gpsLabel = hasGps ? '\uD83D\uDCCD ' : '';
+        const stateLabel = c.state || '';
+        const seenHtml = c.last_seen ? ' &middot; ' + formatTime(c.last_seen) : '';
+
+        html += '<div class="cl-item' + (hasGps ? ' cl-has-gps' : '') + '"'
+          + ' data-lat="' + (c.lat ?? '') + '" data-lon="' + (c.lon ?? '') + '">'
+          + '<div class="cl-dot" style="background:' + dotColor + '"></div>'
+          + '<div class="cl-body">'
+          + '<div class="cl-name">' + escHtml(c.name || c.pubkey_prefix) + '</div>'
+          + '<div class="cl-meta">' + snrHtml + gpsLabel + escHtml(stateLabel) + seenHtml + '</div>'
+          + '</div></div>';
+      });
     }
-  });
-<\/script>
-</body></html>`;
 
-    container.innerHTML = '';
+    sidebar.innerHTML = html;
 
-    // Split layout: sidebar + map
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;width:100%;height:100%;overflow:hidden;';
-
-    // Sidebar
-    const sidebar = document.createElement('div');
-    sidebar.style.cssText = 'width:220px;flex-shrink:0;overflow-y:auto;border-right:1px solid var(--mc-border);background:var(--mc-surface);';
-    sidebar.innerHTML = `
-      <style>
-        .cl-item { display:flex;align-items:flex-start;gap:8px;padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--mc-border);transition:background .12s; }
-        .cl-item:hover { background:var(--mc-surface2); }
-        .cl-item.cl-has-gps:hover { background:rgba(34,197,94,.08); }
-        .cl-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:5px; }
-        .cl-name { font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-        .cl-meta { font-size:11px;color:var(--mc-text2);margin-top:2px; }
-        .cl-header { padding:10px 12px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--mc-text2);border-bottom:1px solid var(--mc-border); }
-      </style>
-      <div class="cl-header">Contacts</div>
-      ${sidebarHtml}`;
-
-    // Map iframe
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'flex:1;border:none;min-width:0;';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-
-    wrapper.appendChild(sidebar);
-    wrapper.appendChild(iframe);
-    container.appendChild(wrapper);
-
-    iframe.contentDocument.open();
-    iframe.contentDocument.write(mapHtml);
-    iframe.contentDocument.close();
-
-    // Click contact in sidebar → fly map to marker
     sidebar.querySelectorAll('.cl-item.cl-has-gps').forEach(item => {
       item.addEventListener('click', () => {
         const lat = parseFloat(item.dataset.lat);
         const lon = parseFloat(item.dataset.lon);
-        if (!isNaN(lat) && !isNaN(lon)) {
-          iframe.contentWindow?.postMessage({ type: 'fly_to', lat, lon }, '*');
+        if (this._leafletMap && !isNaN(lat) && !isNaN(lon)) {
+          this._leafletMap.flyTo([lat, lon], 15, { duration: 1 });
         }
       });
     });
+  }
+
+  async _drawMap() {
+    const mapDiv = this.shadowRoot.querySelector('#mc-leaflet-map');
+    if (!mapDiv) return;
+
+    if (this._leafletMap) { this._leafletMap.remove(); this._leafletMap = null; }
+
+    let L;
+    try {
+      L = await _loadLeaflet();
+    } catch (e) {
+      mapDiv.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9ca3af;font-size:13px;text-align:center;padding:20px">'
+        + '<div>&#x26A0;&#xFE0F; Could not load Leaflet map library.<br>Check your internet connection.</div></div>';
+      return;
+    }
+
+    const homeLat = this._hass?.config?.latitude  ?? 51.5;
+    const homeLon = this._hass?.config?.longitude ?? -0.09;
+
+    // Use requestAnimationFrame to ensure the div is in the rendered DOM with real dimensions
+    await new Promise(r => requestAnimationFrame(r));
+
+    const map = L.map(mapDiv, { zoomControl: true, preferCanvas: true });
+    this._leafletMap = map;
+
+    // CartoDB Voyager — free, no API key, good detail, no usage restrictions
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '\u00a9 <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors \u00a9 <a href="https://carto.com/attributions">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // Home marker
+    const homeIcon = L.divIcon({
+      html: '<div style="font-size:22px;line-height:1;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))">&#x1F3E0;</div>',
+      className: '', iconSize: [24, 24], iconAnchor: [12, 22],
+    });
+    L.marker([homeLat, homeLon], { icon: homeIcon })
+      .addTo(map)
+      .bindPopup('<strong>Home</strong><br><span style="color:#6b7280;font-size:12px">HA home location</span>');
+
+    const snrCol = snr => {
+      const n = parseFloat(snr);
+      if (isNaN(n)) return '#6b7280';
+      if (n >= 5)   return '#22c55e';
+      if (n >= 0)   return '#eab308';
+      if (n >= -10) return '#f97316';
+      return '#ef4444';
+    };
+
+    const fmtTs = ts => {
+      if (!ts) return null;
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return null;
+      const s = (Date.now() - d) / 1000;
+      if (s < 60)    return 'just now';
+      if (s < 3600)  return Math.floor(s / 60) + 'm ago';
+      if (s < 86400) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    };
+
+    const bounds = [[homeLat, homeLon]];
+
+    this._gpsContacts.forEach(c => {
+      const col  = snrCol(c.snr);
+      const stateColor = c.state === 'fresh' ? col : c.state === 'stale' ? '#eab308' : '#6b7280';
+      const icon = L.divIcon({
+        html: '<div style="width:14px;height:14px;border-radius:50%;background:' + stateColor
+          + ';border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,.5)"></div>',
+        className: '', iconSize: [14, 14], iconAnchor: [7, 7],
+      });
+      const ts  = fmtTs(c.last_seen);
+      const popup = '<div style="font-size:13px;min-width:160px;line-height:1.5">'
+        + '<strong style="display:block;margin-bottom:3px">' + escHtml(c.name || c.pubkey_prefix) + '</strong>'
+        + '<div style="font-family:monospace;font-size:11px;color:#6b7280">' + escHtml(c.pubkey_prefix || '') + '</div>'
+        + '<div style="font-size:12px;color:#6b7280">Status: ' + escHtml(c.state || '—') + '</div>'
+        + (c.snr  != null ? '<div style="font-size:12px;color:#6b7280">SNR: <span style="color:' + col + '">' + c.snr + ' dB</span></div>' : '')
+        + (ts     ? '<div style="font-size:12px;color:#6b7280">Last seen: ' + ts + '</div>' : '')
+        + (c.path ? '<div style="font-size:12px;color:#6b7280">Path: ' + escHtml(String(c.path)) + '</div>' : '')
+        + '<div style="font-size:11px;color:#9ca3af">' + Number(c.lat).toFixed(5) + ', ' + Number(c.lon).toFixed(5) + '</div>'
+        + '</div>';
+      L.marker([c.lat, c.lon], { icon }).addTo(map).bindPopup(popup);
+      bounds.push([c.lat, c.lon]);
+    });
+
+    if (this._gpsContacts.length > 0) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    } else {
+      map.setView([homeLat, homeLon], 10);
+    }
+
+    // Force Leaflet to recalculate container size after shadow DOM paint
+    setTimeout(() => map.invalidateSize(), 100);
+    setTimeout(() => map.invalidateSize(), 500);
   }
 
   connectedCallback() { this._render(); }
@@ -982,14 +1046,37 @@ export class MeshCoreMapView extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         ${sharedStyles}
-        :host { display:flex;flex-direction:column;height:100%;overflow:hidden; }
+        ${LEAFLET_SHADOW_CSS}
+        :host { display:flex; flex-direction:column; height:100%; overflow:hidden; }
         .map-header {
-          padding:12px 20px;border-bottom:1px solid var(--mc-border);
-          background:var(--mc-surface);display:flex;align-items:center;gap:10px;flex-shrink:0;
+          padding:12px 20px; border-bottom:1px solid var(--mc-border);
+          background:var(--mc-surface); display:flex; align-items:center; gap:10px; flex-shrink:0;
         }
-        .map-header h2 { font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;flex:1; }
-        .map-badge { font-size:12px;color:var(--mc-text2); }
-        #map-container { flex:1;overflow:hidden;position:relative;min-height:0; }
+        .map-header h2 { font-size:16px; font-weight:600; display:flex; align-items:center; gap:8px; flex:1; }
+        .map-badge { font-size:12px; color:var(--mc-text2); }
+        .mc-map-body { flex:1; display:flex; overflow:hidden; min-height:0; }
+        .mc-map-sidebar {
+          width:220px; flex-shrink:0; overflow-y:auto;
+          border-right:1px solid var(--mc-border); background:var(--mc-surface);
+        }
+        .cl-header {
+          padding:10px 14px; font-size:11px; font-weight:600;
+          text-transform:uppercase; letter-spacing:.05em; color:var(--mc-text2);
+          border-bottom:1px solid var(--mc-border); position:sticky; top:0;
+          background:var(--mc-surface); z-index:1;
+        }
+        .cl-empty { padding:20px 14px; font-size:12px; color:var(--mc-text2); text-align:center; line-height:1.6; }
+        .cl-item {
+          display:flex; align-items:flex-start; gap:9px; padding:10px 12px;
+          border-bottom:1px solid var(--mc-border); cursor:default; transition:background .12s;
+        }
+        .cl-item.cl-has-gps { cursor:pointer; }
+        .cl-item.cl-has-gps:hover { background:rgba(34,197,94,.08); }
+        .cl-dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; margin-top:4px; }
+        .cl-body { flex:1; min-width:0; }
+        .cl-name { font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--mc-text); }
+        .cl-meta { font-size:11px; color:var(--mc-text2); margin-top:2px; }
+        #mc-leaflet-map { flex:1; min-width:0; min-height:0; }
       </style>
       <div class="map-header">
         <h2>
@@ -999,12 +1086,17 @@ export class MeshCoreMapView extends HTMLElement {
           </svg>
           Map
         </h2>
-        <span class="map-badge">Loading…</span>
-        <button class="mc-btn mc-btn-secondary" id="map-refresh">↻ Refresh</button>
+        <span class="map-badge">Loading\u2026</span>
+        <button class="mc-btn mc-btn-secondary" id="map-refresh">\u21bb Refresh</button>
       </div>
-      <div id="map-container">
-        <div style="display:flex;justify-content:center;padding:60px"><div class="mc-spinner"></div></div>
+      <div class="mc-map-body">
+        <div class="mc-map-sidebar">
+          <div class="cl-header">Contacts</div>
+          <div class="cl-empty">Loading\u2026</div>
+        </div>
+        <div id="mc-leaflet-map"></div>
       </div>`;
+
     this.shadowRoot.querySelector('#map-refresh').addEventListener('click', () => this._loadAndDraw());
   }
 

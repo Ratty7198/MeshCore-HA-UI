@@ -134,10 +134,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """Register the sidebar panel pointing at our JS bundle."""
-    from homeassistant.components.http import StaticPathConfig
     root = Path(__file__).parent
 
-    # Serve our static files
+    # Serve our static files — use the current HA API
     await hass.http.async_register_static_paths([
         StaticPathConfig(
             url_path="/meshcore_ui",
